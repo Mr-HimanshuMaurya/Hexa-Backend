@@ -75,11 +75,15 @@ const createCampaign = async (req, res, next) => {
     }
 
     await resetDailyQuotasIfNeeded();
-    const activeKeys = await ApiKey.countDocuments({ isActive: true });
+    const activeKeys = await ApiKey.countDocuments({
+      isActive: true,
+      senderEmail: { $exists: true, $nin: [null, ''] },
+    });
     if (activeKeys === 0) {
       return res.status(400).json({
         success: false,
-        message: 'No active API keys configured. Add a Brevo key before launching a campaign.',
+        message:
+          'No active API keys with a verified sender email configured. Add a Brevo key with sender email before launching a campaign.',
       });
     }
 

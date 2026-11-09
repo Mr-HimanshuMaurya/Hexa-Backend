@@ -1,9 +1,42 @@
 const ApiKey = require('../models/ApiKey');
 const { encrypt, decrypt, resetDailyQuotasIfNeeded } = require('../utils/email');
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const maskKey = (plain) => {
   if (!plain || plain.length < 8) return '****';
   return `${plain.slice(0, 4)}${'*'.repeat(Math.min(plain.length - 8, 20))}${plain.slice(-4)}`;
+};
+
+const isValidEmail = (email) => EMAIL_REGEX.test(String(email || '').trim());
+
+const sanitizeKey = (k, plain) => {
+  const hasSenderEmail = Boolean(k.senderEmail?.trim());
+  return {
+    _id: k._id,
+    label: k.label,
+    apiKeyMasked: maskKey(plain),
+    senderEmail: k.senderEmail || '',
+    senderName: k.senderName || process.env.FROM_NAME || 'Hexa Mailer',
+    isComplete: hasSenderEmail,
+    dailyLimit: k.dailyLimit,
+    usedToday: k.usedToday,
+    remaining: Math.max(0, k.dailyLimit - k.usedToday),
+    lastResetDate: k.lastResetDate,
+    isActive: k.isActive,
+    createdAt: k.createdAt,
+    updatedAt: k.updatedAt,
+  };
+};
+
+/**
+ * Deactivate keys missing senderEmail (legacy records).
+ */
+const deactivateIncompleteKeys = async () => {
+  await ApiKey.updateMany(
+    { $or: [{ senderEmail: { $exists: false } }, { senderEmail: '' }, { senderEmail: null }] },
+    { $set: { isActive: false } }
+  );
 };
 
 /**
@@ -12,6 +45,7 @@ const maskKey = (plain) => {
 const getKeys = async (req, res, next) => {
   try {
     await resetDailyQuotasIfNeeded();
+    await deactivateIncompleteKeys();
     const keys = await ApiKey.find().sort({ createdAt: -1 });
 
     const sanitized = keys.map((k) => {
@@ -21,18 +55,7 @@ const getKeys = async (req, res, next) => {
       } catch {
         plain = '****';
       }
-      return {
-        _id: k._id,
-        label: k.label,
-        apiKeyMasked: maskKey(plain),
-        dailyLimit: k.dailyLimit,
-        usedToday: k.usedToday,
-        remaining: Math.max(0, k.dailyLimit - k.usedToday),
-        lastResetDate: k.lastResetDate,
-        isActive: k.isActive,
-        createdAt: k.createdAt,
-        updatedAt: k.updatedAt,
-      };
+      return sanitizeKey(k, plain);
     });
 
     res.json({ success: true, data: sanitized });
@@ -46,15 +69,25 @@ const getKeys = async (req, res, next) => {
  */
 const createKey = async (req, res, next) => {
   try {
-    const { label, apiKey, dailyLimit } = req.body;
+    const { label, apiKey, senderEmail, senderName, dailyLimit } = req.body;
 
     if (!label || !apiKey) {
       return res.status(400).json({ success: false, message: 'Label and API key are required' });
     }
 
+    if (!senderEmail?.trim()) {
+      return res.status(400).json({ success: false, message: 'Sender email is required' });
+    }
+
+    if (!isValidEmail(senderEmail)) {
+      return res.status(400).json({ success: false, message: 'Sender email must be a valid email address' });
+    }
+
     const key = await ApiKey.create({
       label,
       apiKey: encrypt(apiKey.trim()),
+      senderEmail: senderEmail.trim().toLowerCase(),
+      senderName: senderName?.trim() || process.env.FROM_NAME || 'Hexa Mailer',
       dailyLimit: dailyLimit || 300,
       usedToday: 0,
       lastResetDate: new Date(),
@@ -63,16 +96,7 @@ const createKey = async (req, res, next) => {
 
     res.status(201).json({
       success: true,
-      data: {
-        _id: key._id,
-        label: key.label,
-        apiKeyMasked: maskKey(apiKey.trim()),
-        dailyLimit: key.dailyLimit,
-        usedToday: 0,
-        remaining: key.dailyLimit,
-        isActive: true,
-        createdAt: key.createdAt,
-      },
+      data: sanitizeKey(key, apiKey.trim()),
     });
   } catch (error) {
     next(error);
@@ -89,12 +113,30 @@ const updateKey = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'API key not found' });
     }
 
-    const { label, apiKey, dailyLimit, isActive } = req.body;
+    const { label, apiKey, senderEmail, senderName, dailyLimit, isActive } = req.body;
 
     if (label !== undefined) key.label = label;
     if (apiKey !== undefined && apiKey.trim()) key.apiKey = encrypt(apiKey.trim());
+    if (senderEmail !== undefined) {
+      if (!senderEmail.trim()) {
+        return res.status(400).json({ success: false, message: 'Sender email is required' });
+      }
+      if (!isValidEmail(senderEmail)) {
+        return res.status(400).json({ success: false, message: 'Sender email must be a valid email address' });
+      }
+      key.senderEmail = senderEmail.trim().toLowerCase();
+    }
+    if (senderName !== undefined) key.senderName = senderName.trim() || process.env.FROM_NAME || 'Hexa Mailer';
     if (dailyLimit !== undefined) key.dailyLimit = dailyLimit;
-    if (isActive !== undefined) key.isActive = isActive;
+    if (isActive !== undefined) {
+      if (isActive && !key.senderEmail?.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot activate key without a verified sender email',
+        });
+      }
+      key.isActive = isActive;
+    }
 
     await key.save();
 
@@ -107,16 +149,7 @@ const updateKey = async (req, res, next) => {
 
     res.json({
       success: true,
-      data: {
-        _id: key._id,
-        label: key.label,
-        apiKeyMasked: maskKey(plain),
-        dailyLimit: key.dailyLimit,
-        usedToday: key.usedToday,
-        remaining: Math.max(0, key.dailyLimit - key.usedToday),
-        isActive: key.isActive,
-        updatedAt: key.updatedAt,
-      },
+      data: sanitizeKey(key, plain),
     });
   } catch (error) {
     next(error);

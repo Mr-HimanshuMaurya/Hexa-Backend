@@ -65,7 +65,10 @@ const resetDailyQuotasIfNeeded = async () => {
 const getAvailableKey = async () => {
   await resetDailyQuotasIfNeeded();
 
-  const keys = await ApiKey.find({ isActive: true }).sort({ usedToday: 1 });
+  const keys = await ApiKey.find({
+    isActive: true,
+    senderEmail: { $exists: true, $nin: [null, ''] },
+  }).sort({ usedToday: 1 });
 
   for (const key of keys) {
     if (key.usedToday < key.dailyLimit) {
@@ -109,13 +112,21 @@ const sendEmail = async ({ to, subject, htmlContent }) => {
 
   const { keyDoc, plainKey } = available;
 
+  if (!keyDoc.senderEmail?.trim()) {
+    return {
+      success: false,
+      error: 'MISSING_SENDER_EMAIL',
+      message: `API key "${keyDoc.label}" has no sender email configured`,
+    };
+  }
+
   try {
     const response = await axios.post(
       'https://api.brevo.com/v3/smtp/email',
       {
         sender: {
-          name: process.env.FROM_NAME || 'Hexa Mailer',
-          email: process.env.FROM_EMAIL || 'noreply@yourclientdomain.com',
+          name: keyDoc.senderName || process.env.FROM_NAME || 'Hexa Mailer',
+          email: keyDoc.senderEmail,
         },
         to: Array.isArray(to) ? to : [{ email: to.email, name: to.name || to.email }],
         subject,

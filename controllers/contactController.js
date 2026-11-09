@@ -277,6 +277,36 @@ const bulkDeleteContacts = async (req, res, next) => {
 };
 
 /**
+ * GET /api/contacts/all-ids — lightweight id list for bulk select
+ */
+const getAllContactIds = async (req, res, next) => {
+  try {
+    const search = (req.query.search || '').trim();
+    const tag = (req.query.tag || '').trim();
+    const source = (req.query.source || '').trim();
+
+    const filter = {};
+    if (search) {
+      filter.$or = [
+        { email: { $regex: search, $options: 'i' } },
+        { name: { $regex: search, $options: 'i' } },
+      ];
+    }
+    if (tag) filter.tags = tag;
+    if (source) filter.source = source;
+
+    const ids = await Contact.find(filter).select('_id').lean();
+    res.json({
+      success: true,
+      data: ids.map((c) => c._id.toString()),
+      total: ids.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * GET /api/contacts/stats — for dashboard
  */
 const getContactStats = async (req, res, next) => {
@@ -290,6 +320,7 @@ const getContactStats = async (req, res, next) => {
 
 module.exports = {
   getContacts,
+  getAllContactIds,
   createContact,
   bulkCreateContacts,
   uploadExcel,

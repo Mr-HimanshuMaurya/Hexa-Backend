@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const {
   getContacts,
+  getAllContactIds,
   createContact,
   bulkCreateContacts,
   uploadExcel,
@@ -21,6 +22,7 @@ const upload = multer({
 
 router.use(protect);
 
+router.get('/all-ids', getAllContactIds);
 router.get('/', getContacts);
 router.post('/', createContact);
 router.post('/bulk', bulkCreateContacts);
